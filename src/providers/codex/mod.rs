@@ -47,13 +47,13 @@ use self::continuation::{
     record_continuation_for_owner,
 };
 use self::count_tokens::count_translated_tokens;
-use self::translate::accumulate::accumulate_response_with_traffic;
+use self::translate::accumulate::accumulate_response_with_traffic_and_mode;
 use self::translate::live_stream::LiveStreamTranslator;
 use self::translate::model_allowlist::{
     assert_allowed_model, full_lane_web_search_model, resolve_model_request_with_config_override,
     uses_responses_lite,
 };
-use self::translate::reducer::finish_metadata_from_upstream;
+use self::translate::reducer::{ExecutionMode, finish_metadata_from_upstream};
 use self::translate::request::{
     TranslateOptions, has_hosted_web_search, is_compact_messages_request, translate_request,
 };
@@ -62,7 +62,7 @@ const MAX_RETRYABLE_LIVE_STREAM_RETRIES: u32 = 10;
 const MAX_EMPTY_COMPLETION_RETRIES: u32 = 10;
 const EMPTY_CODEX_COMPLETION_DETAIL: &str = "empty_codex_completion";
 const LIVE_STREAM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
-use self::translate::stream::translate_stream_bytes_with_traffic;
+use self::translate::stream::translate_stream_bytes_with_traffic_and_mode;
 
 // ---------------------------------------------------------------------------
 // Provider
@@ -114,6 +114,22 @@ impl CodexProvider {
             );
         }
         if search::is_standalone_search_request(&body) {
+            if body.extra.get("speed").and_then(|value| value.as_str()) == Some("fast") {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    "Fast mode is not supported for standalone web search",
+                );
+            }
+            if let Some(speed) = body.extra.get("speed")
+                && speed.as_str() != Some("standard")
+            {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    "Invalid speed: expected one of: standard, fast",
+                );
+            }
             if let Some(monitor) = ctx.monitor.as_ref() {
                 monitor.model_resolved(&ctx.req_id, &resolved.model);
             }
@@ -276,6 +292,7 @@ impl CodexProvider {
         }
 
         // Check continuation
+        let request_mode = ExecutionMode::from_request_tier(translated.service_tier.as_ref());
         let previous_response_id_enabled = config::codex_previous_response_id();
         let continuation = continuation_candidate_for_owner(
             conversation_identity.as_ref(),
@@ -295,6 +312,10 @@ impl CodexProvider {
                 ("transport".to_string(), serde_json::json!(transport)),
                 ("model".to_string(), serde_json::json!(&resolved.model)),
                 ("stream".to_string(), serde_json::json!(want_stream)),
+                (
+                    "serviceTier".to_string(),
+                    serde_json::to_value(translated.service_tier.as_ref()).unwrap_or_default(),
+                ),
                 (
                     "responsesLite".to_string(),
                     serde_json::json!(use_responses_lite),
@@ -426,11 +447,12 @@ impl CodexProvider {
 
         if want_stream {
             let estimated_input_tokens = count_translated_tokens(&translated);
-            let sse_bytes = match translate_stream_bytes_with_traffic(
+            let sse_bytes = match translate_stream_bytes_with_traffic_and_mode(
                 &upstream.body,
                 &message_id,
                 model,
                 estimated_input_tokens,
+                request_mode,
                 ctx.traffic.as_deref(),
             ) {
                 Ok(b) => b,
@@ -469,10 +491,11 @@ impl CodexProvider {
             ];
             (headers, sse_bytes).into_response()
         } else {
-            match accumulate_response_with_traffic(
+            match accumulate_response_with_traffic_and_mode(
                 &upstream.body,
                 &message_id,
                 model,
+                request_mode,
                 ctx.traffic.as_deref(),
             ) {
                 Ok(json) => {
@@ -848,10 +871,12 @@ async fn live_stream_response_once(
     compaction: LiveStreamCompaction,
 ) -> LiveStreamStart {
     let estimated_input_tokens = count_translated_tokens(&request_body);
-    let mut translator = LiveStreamTranslator::with_estimated_input_tokens(
+    let request_mode = ExecutionMode::from_request_tier(request_body.service_tier.as_ref());
+    let mut translator = LiveStreamTranslator::with_estimated_input_tokens_and_mode(
         message_id,
         model.to_string(),
         estimated_input_tokens,
+        request_mode,
     );
     let mut upstream_sse_body = Vec::new();
     // Keep protocol framing private until real output makes a transparent retry unsafe.

@@ -28,7 +28,9 @@ The proxy owns its tokens and does not read native Codex CLI credentials. It ref
 
 Use `claude-code-proxy models` as the current catalog. Model access depends on your ChatGPT account. A model rejected by the subscription produces the upstream error verbatim.
 
-Append `-fast` to any registered Codex model to request `service_tier: "priority"`. For example, `gpt-5.6-sol-fast` selects `gpt-5.6-sol` with fast service. `CCP_CODEX_SERVICE_TIER` or `codex.serviceTier` takes precedence.
+Append `-fast` to any registered Codex model to request `service_tier: "priority"`. For example, `gpt-5.6-sol-fast` selects `gpt-5.6-sol` with fast service.
+
+Claude Code's native `/fast` toggle is also supported. For custom gateways, launch Claude Code with `CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1` so the toggle is available. An Anthropic request with `speed: "fast"` selects the Codex priority tier for that request; `speed: "standard"` cancels a model `-fast` suffix for that request. Responses report both Anthropic `usage.speed` and `usage.service_tier`, preferring the tier observed in the Codex response when available. `CCP_CODEX_SERVICE_TIER` or `codex.serviceTier` remains an administrator override and takes precedence over both request speed and the model suffix. Standalone `/alpha/search` requests do not support fast mode.
 
 ## Reasoning
 

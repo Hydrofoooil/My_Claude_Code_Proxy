@@ -181,6 +181,8 @@ pub fn anthropic_search_response(
         "output_tokens": output_tokens,
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
+        "service_tier": "standard",
+        "speed": "standard",
         "server_tool_use": {"web_search_requests": 1}
     });
 
@@ -216,7 +218,12 @@ pub fn anthropic_search_response(
                 "content": [],
                 "stop_reason": null,
                 "stop_sequence": null,
-                "usage": {"input_tokens": input_tokens, "output_tokens": 0}
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": 0,
+                    "service_tier": "standard",
+                    "speed": "standard"
+                }
             }
         }),
     );
@@ -294,7 +301,13 @@ pub fn anthropic_search_response(
         &json!({
             "type": "message_delta",
             "delta": {"stop_reason": "end_turn", "stop_sequence": null},
-            "usage": usage
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "server_tool_use": {"web_search_requests": 1}
+            }
         }),
     );
     emit(

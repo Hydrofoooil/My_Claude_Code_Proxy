@@ -49,6 +49,12 @@ pub enum ServiceTier {
     Flex,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestSpeed {
+    Standard,
+    Fast,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponsesToolChoiceMode {
@@ -380,13 +386,39 @@ fn normalize_service_tier(tier: &str) -> Result<ServiceTier, anyhow::Error> {
     }
 }
 
+fn read_request_speed(req: &MessagesRequest) -> Result<Option<RequestSpeed>, anyhow::Error> {
+    let Some(value) = req.extra.get("speed") else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        Some("standard") => Ok(Some(RequestSpeed::Standard)),
+        Some("fast") => Ok(Some(RequestSpeed::Fast)),
+        Some(other) => anyhow::bail!("Invalid speed: \"{other}\". Must be one of: standard, fast"),
+        None => anyhow::bail!("Invalid speed: expected one of: standard, fast"),
+    }
+}
+
 fn resolve_service_tier(
     model_tier: Option<ServiceTier>,
+    request_speed: Option<RequestSpeed>,
 ) -> Result<Option<ServiceTier>, anyhow::Error> {
     let tier = config::codex_service_tier();
-    match tier {
-        Some(ref val) => Ok(Some(normalize_service_tier(val)?)),
-        None => Ok(model_tier),
+    resolve_service_tier_override(model_tier, request_speed, tier.as_deref())
+}
+
+fn resolve_service_tier_override(
+    model_tier: Option<ServiceTier>,
+    request_speed: Option<RequestSpeed>,
+    override_tier: Option<&str>,
+) -> Result<Option<ServiceTier>, anyhow::Error> {
+    let request_tier = match request_speed {
+        Some(RequestSpeed::Fast) => Some(ServiceTier::Priority),
+        Some(RequestSpeed::Standard) => None,
+        None => model_tier,
+    };
+    match override_tier {
+        Some(value) => Ok(Some(normalize_service_tier(value)?)),
+        None => Ok(request_tier),
     }
 }
 
@@ -454,6 +486,7 @@ fn translate_request_inner(
     opts: TranslateOptions,
     apply_codex_config: bool,
 ) -> Result<ResponsesRequest, anyhow::Error> {
+    let request_speed = read_request_speed(req)?;
     let instructions = flatten_system_text(req.extra.get("system"));
     let is_compact = is_compact_messages_request(req);
     let input = build_input(req);
@@ -546,7 +579,7 @@ fn translate_request_inner(
     }
 
     if apply_codex_config {
-        let service_tier = resolve_service_tier(opts.service_tier)?;
+        let service_tier = resolve_service_tier(opts.service_tier, request_speed)?;
         if let Some(ref tier) = service_tier {
             out.service_tier = Some(tier.clone());
         }
@@ -1143,6 +1176,66 @@ mod tests {
             service_tier: None,
             model: "gpt-5.5".to_string(),
             use_responses_lite: false,
+        }
+    }
+
+    #[test]
+    fn request_speed_selects_request_scoped_service_tier() {
+        for (speed, model_tier, expected) in [
+            (None, None, None),
+            (
+                None,
+                Some(ServiceTier::Priority),
+                Some(ServiceTier::Priority),
+            ),
+            (Some(RequestSpeed::Fast), None, Some(ServiceTier::Priority)),
+            (
+                Some(RequestSpeed::Standard),
+                Some(ServiceTier::Priority),
+                None,
+            ),
+        ] {
+            assert_eq!(
+                resolve_service_tier_override(model_tier, speed, None).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            resolve_service_tier_override(None, Some(RequestSpeed::Standard), Some("priority"))
+                .unwrap(),
+            Some(ServiceTier::Priority)
+        );
+        assert_eq!(
+            resolve_service_tier_override(None, Some(RequestSpeed::Fast), Some("flex")).unwrap(),
+            Some(ServiceTier::Flex)
+        );
+    }
+
+    #[test]
+    fn translate_request_validates_speed_and_maps_fast() {
+        let mut request: MessagesRequest = serde_json::from_value(json!({
+            "model": "gpt-5.5",
+            "messages": [{"role":"user", "content":"hello"}],
+            "speed": "fast"
+        }))
+        .unwrap();
+        let translated = translate_request(&request, opts()).unwrap();
+        assert_eq!(translated.service_tier, Some(ServiceTier::Priority));
+
+        request.extra.insert("speed".into(), json!("standard"));
+        let translated = translate_request(
+            &request,
+            TranslateOptions {
+                service_tier: Some(ServiceTier::Priority),
+                ..opts()
+            },
+        )
+        .unwrap();
+        assert_eq!(translated.service_tier, None);
+
+        for invalid in [json!("turbo"), json!(null), json!(true), json!(1)] {
+            request.extra.insert("speed".into(), invalid);
+            assert!(translate_request(&request, opts()).is_err());
         }
     }
 

@@ -3,6 +3,12 @@ title: Changelog
 description: Release notes for claude-code-proxy.
 ---
 
+## Unreleased
+
+- Claude Code's native `/fast` toggle now selects Codex fast service per request,
+  returns the observed speed and service tier in Anthropic usage, and switches
+  back to standard service without changing models or restarting the proxy.
+
 ## v0.1.32 (2026-08-03)
 
 - Kimi subagents and multimodal messages with mixed text and images work instead

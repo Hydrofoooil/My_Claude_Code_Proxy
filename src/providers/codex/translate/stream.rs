@@ -4,7 +4,8 @@ use crate::anthropic::sse::encode_sse_event;
 use crate::traffic::TrafficCapture;
 
 use super::reducer::{
-    ReducerEvent, UpstreamStreamError, map_codex_usage_to_anthropic, reduce_upstream_bytes,
+    ExecutionMode, ReducerEvent, UpstreamStreamError, map_codex_usage_to_anthropic,
+    reduce_upstream_bytes,
 };
 use super::web_search_compat::build_web_search_compat_blocks;
 
@@ -19,6 +20,7 @@ struct MessageMetadata<'a> {
     id: &'a str,
     model: &'a str,
     estimated_input_tokens: u64,
+    execution_mode: ExecutionMode,
 }
 
 fn emit(
@@ -60,6 +62,8 @@ fn ensure_message_start(
                 "usage": {
                     "input_tokens": message.estimated_input_tokens,
                     "output_tokens": 0,
+                    "service_tier": message.execution_mode.service_tier,
+                    "speed": message.execution_mode.speed,
                 }
             }
         });
@@ -254,7 +258,14 @@ pub fn translate_stream_bytes(
     message_id: &str,
     model: &str,
 ) -> Result<Vec<u8>, anyhow::Error> {
-    translate_stream_bytes_with_traffic(upstream, message_id, model, 0, None)
+    translate_stream_bytes_with_traffic_and_mode(
+        upstream,
+        message_id,
+        model,
+        0,
+        ExecutionMode::standard(),
+        None,
+    )
 }
 
 pub fn translate_stream_bytes_with_traffic(
@@ -262,6 +273,24 @@ pub fn translate_stream_bytes_with_traffic(
     message_id: &str,
     model: &str,
     estimated_input_tokens: u64,
+    traffic: Option<&TrafficCapture>,
+) -> Result<Vec<u8>, anyhow::Error> {
+    translate_stream_bytes_with_traffic_and_mode(
+        upstream,
+        message_id,
+        model,
+        estimated_input_tokens,
+        ExecutionMode::standard(),
+        traffic,
+    )
+}
+
+pub fn translate_stream_bytes_with_traffic_and_mode(
+    upstream: &[u8],
+    message_id: &str,
+    model: &str,
+    estimated_input_tokens: u64,
+    request_mode: ExecutionMode,
     traffic: Option<&TrafficCapture>,
 ) -> Result<Vec<u8>, anyhow::Error> {
     let events = match reduce_upstream_bytes(upstream) {
@@ -281,10 +310,19 @@ pub fn translate_stream_bytes_with_traffic(
     let mut open_blocks: BTreeMap<usize, OpenBlock> = BTreeMap::new();
     let mut web_search_events: Vec<ReducerEvent> = Vec::new();
     let mut deferred_content_events: Vec<ReducerEvent> = Vec::new();
+    let execution_mode = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            ReducerEvent::Finish { execution_mode, .. } => *execution_mode,
+            _ => None,
+        })
+        .unwrap_or(request_mode);
     let message = MessageMetadata {
         id: message_id,
         model,
         estimated_input_tokens,
+        execution_mode,
     };
 
     for event in &events {

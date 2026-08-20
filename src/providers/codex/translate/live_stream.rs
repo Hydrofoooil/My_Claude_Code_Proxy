@@ -7,7 +7,8 @@ use crate::traffic::TrafficCapture;
 use super::read_rewrite::sanitize_read_args;
 use super::reasoning_signature::{PendingReasoning, encode_reasoning_signature};
 use super::reducer::{
-    CodexUsage, STOP_END_TURN, STOP_MAX_TOKENS, STOP_TOOL_USE, map_codex_usage_to_anthropic,
+    CodexUsage, ExecutionMode, STOP_END_TURN, STOP_MAX_TOKENS, STOP_TOOL_USE,
+    execution_mode_from_response, map_codex_usage_to_anthropic,
 };
 
 const BUFFERED_READ_REPAIR_TRAILING_WHITESPACE_BYTES: usize = 1_024;
@@ -67,6 +68,9 @@ pub struct LiveStreamTranslator {
     // Seeds Claude Code's live subagent counter until the provider returns
     // authoritative usage in the terminal message_delta.
     estimated_input_tokens: u64,
+    request_mode: ExecutionMode,
+    observed_mode: Option<ExecutionMode>,
+    pending_ping: bool,
     finished: bool,
 }
 
@@ -79,6 +83,20 @@ impl LiveStreamTranslator {
         message_id: impl Into<String>,
         model: impl Into<String>,
         estimated_input_tokens: u64,
+    ) -> Self {
+        Self::with_estimated_input_tokens_and_mode(
+            message_id,
+            model,
+            estimated_input_tokens,
+            ExecutionMode::standard(),
+        )
+    }
+
+    pub fn with_estimated_input_tokens_and_mode(
+        message_id: impl Into<String>,
+        model: impl Into<String>,
+        estimated_input_tokens: u64,
+        request_mode: ExecutionMode,
     ) -> Self {
         Self {
             message_id: message_id.into(),
@@ -96,6 +114,9 @@ impl LiveStreamTranslator {
             deferred_text: Vec::new(),
             semantic_output_started: false,
             estimated_input_tokens,
+            request_mode,
+            observed_mode: None,
+            pending_ping: false,
             finished: false,
         }
     }
@@ -119,7 +140,15 @@ impl LiveStreamTranslator {
                 }
                 self.emit_ping(traffic, &mut out);
             }
-            "keepalive" | "response.created" | "response.in_progress" => {
+            "keepalive" => {
+                self.pending_ping = true;
+            }
+            "response.created" | "response.in_progress" => {
+                if let Some(response) = payload.get("response")
+                    && let Some(mode) = execution_mode_from_response(response)
+                {
+                    self.observed_mode = Some(mode);
+                }
                 self.emit_ping(traffic, &mut out);
             }
             "response.failed" | "response.error" | "error" => {
@@ -239,6 +268,7 @@ impl LiveStreamTranslator {
             return;
         }
         self.message_started = true;
+        let mode = self.observed_mode.unwrap_or(self.request_mode);
         self.emit(
             traffic,
             out,
@@ -255,11 +285,17 @@ impl LiveStreamTranslator {
                     "stop_sequence": null,
                     "usage": {
                         "input_tokens": self.estimated_input_tokens,
-                        "output_tokens": 0
+                        "output_tokens": 0,
+                        "service_tier": mode.service_tier,
+                        "speed": mode.speed,
                     }
                 }
             }),
         );
+        if self.pending_ping {
+            self.pending_ping = false;
+            self.emit(traffic, out, "ping", &serde_json::json!({"type": "ping"}));
+        }
     }
 
     fn emit_ping(&mut self, traffic: Option<&TrafficCapture>, out: &mut Vec<u8>) {
@@ -1558,6 +1594,61 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err, "rate limit reached");
+    }
+
+    #[test]
+    fn response_created_reports_observed_execution_mode() {
+        let mut translator = LiveStreamTranslator::with_estimated_input_tokens_and_mode(
+            "msg_1",
+            "gpt-5.5",
+            7,
+            ExecutionMode::standard(),
+        );
+        let output = String::from_utf8(
+            translator
+                .accept(
+                    &json!({
+                        "type": "response.created",
+                        "response": {"service_tier": "priority"}
+                    }),
+                    None,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(output.contains(r#""service_tier":"priority""#));
+        assert!(output.contains(r#""speed":"fast""#));
+    }
+
+    #[test]
+    fn keepalive_before_created_does_not_freeze_execution_mode() {
+        let mut translator = LiveStreamTranslator::with_estimated_input_tokens_and_mode(
+            "msg_1",
+            "gpt-5.5",
+            7,
+            ExecutionMode::from_request_tier(Some(&super::super::request::ServiceTier::Priority)),
+        );
+        assert!(
+            translator
+                .accept(&json!({"type": "keepalive"}), None)
+                .unwrap()
+                .is_empty()
+        );
+        let output = String::from_utf8(
+            translator
+                .accept(
+                    &json!({
+                        "type": "response.created",
+                        "response": {"service_tier": "default"}
+                    }),
+                    None,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(output.contains(r#""service_tier":"standard""#));
+        assert!(output.contains(r#""speed":"standard""#));
+        assert_eq!(output.matches("event: ping").count(), 2);
     }
 
     #[test]

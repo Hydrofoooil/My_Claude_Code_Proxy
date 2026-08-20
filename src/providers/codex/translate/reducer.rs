@@ -3,7 +3,60 @@ use crate::providers::codex::events::is_terminal_rate_limit_event;
 
 use super::read_rewrite::sanitize_read_args;
 use super::reasoning_signature::{PendingReasoning, ReasoningReplay, encode_reasoning_signature};
-use super::request::ResponsesInputItem;
+use super::request::{ResponsesInputItem, ServiceTier};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnthropicServiceTier {
+    Standard,
+    Priority,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnthropicSpeed {
+    Standard,
+    Fast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecutionMode {
+    pub service_tier: AnthropicServiceTier,
+    pub speed: AnthropicSpeed,
+}
+
+impl ExecutionMode {
+    pub const fn standard() -> Self {
+        Self {
+            service_tier: AnthropicServiceTier::Standard,
+            speed: AnthropicSpeed::Standard,
+        }
+    }
+
+    pub fn from_request_tier(tier: Option<&ServiceTier>) -> Self {
+        match tier {
+            Some(ServiceTier::Priority) => Self {
+                service_tier: AnthropicServiceTier::Priority,
+                speed: AnthropicSpeed::Fast,
+            },
+            Some(ServiceTier::Flex) | None => Self::standard(),
+        }
+    }
+}
+
+pub fn execution_mode_from_response(response: &serde_json::Value) -> Option<ExecutionMode> {
+    match response
+        .get("service_tier")
+        .and_then(|value| value.as_str())
+    {
+        Some("priority" | "fast") => Some(ExecutionMode {
+            service_tier: AnthropicServiceTier::Priority,
+            speed: AnthropicSpeed::Fast,
+        }),
+        Some("auto" | "default" | "standard" | "flex" | "scale") => Some(ExecutionMode::standard()),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct UpstreamStreamError {
@@ -118,6 +171,7 @@ pub enum ReducerEvent {
         terminal_type: String,
         continuation_eligible: bool,
         usage: Option<CodexUsage>,
+        execution_mode: Option<ExecutionMode>,
         web_search_requests: usize,
         response_id: Option<String>,
         output_items: Vec<ResponsesInputItem>,
@@ -260,6 +314,8 @@ pub fn reduce_upstream_bytes(input: &[u8]) -> Result<Vec<ReducerEvent>, Upstream
     let mut active_thinking: Option<ActiveThinking> = None;
     let mut saw_tool_use = false;
     let mut final_usage: Option<CodexUsage> = None;
+    let mut created_execution_mode: Option<ExecutionMode> = None;
+    let mut final_execution_mode: Option<ExecutionMode> = None;
     let mut response_id: Option<String> = None;
     let mut terminal_type: Option<String> = None;
     let mut continuation_eligible = false;
@@ -342,6 +398,16 @@ pub fn reduce_upstream_bytes(input: &[u8]) -> Result<Vec<ReducerEvent>, Upstream
                     retry_after_seconds: retry_after.map(|f| f as u64),
                     diagnostics: None,
                 });
+            }
+            out.push(ReducerEvent::Progress);
+            continue;
+        }
+
+        if t == "response.created" || t == "response.in_progress" {
+            if let Some(response) = p.get("response")
+                && let Some(mode) = execution_mode_from_response(response)
+            {
+                created_execution_mode = Some(mode);
             }
             out.push(ReducerEvent::Progress);
             continue;
@@ -626,6 +692,7 @@ pub fn reduce_upstream_bytes(input: &[u8]) -> Result<Vec<ReducerEvent>, Upstream
                     terminal_type: TERM_INCOMPLETE.to_string(),
                     continuation_eligible: false,
                     usage: None,
+                    execution_mode: created_execution_mode,
                     web_search_requests,
                     response_id: None,
                     output_items,
@@ -775,6 +842,10 @@ pub fn reduce_upstream_bytes(input: &[u8]) -> Result<Vec<ReducerEvent>, Upstream
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             final_usage = p.get("response").map(parse_codex_usage);
+            final_execution_mode = p
+                .get("response")
+                .and_then(execution_mode_from_response)
+                .or(created_execution_mode);
             if response_is_incomplete(&p, &t) {
                 incomplete = true;
             }
@@ -826,6 +897,7 @@ pub fn reduce_upstream_bytes(input: &[u8]) -> Result<Vec<ReducerEvent>, Upstream
         terminal_type: terminal_type.unwrap_or_else(|| TERM_INCOMPLETE.to_string()),
         continuation_eligible,
         usage: final_usage,
+        execution_mode: final_execution_mode.or(created_execution_mode),
         web_search_requests,
         response_id,
         output_items,
@@ -1088,9 +1160,8 @@ pub fn map_codex_usage_to_anthropic(
     u: &Option<CodexUsage>,
     web_search_requests: Option<usize>,
 ) -> AnthropicUsage {
-    let usage = match u {
-        Some(u) => u,
-        None => return AnthropicUsage::default(),
+    let Some(usage) = u else {
+        return AnthropicUsage::default();
     };
     let cached = usage.input_tokens_details_cached.unwrap_or(0);
     let total_input = usage.input_tokens.unwrap_or(0);
@@ -1101,6 +1172,8 @@ pub fn map_codex_usage_to_anthropic(
         output_tokens: usage.output_tokens.unwrap_or(0),
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: cached,
+        service_tier: None,
+        speed: None,
         server_tool_use: None,
     };
 
@@ -1115,12 +1188,21 @@ pub fn map_codex_usage_to_anthropic(
     result
 }
 
+pub fn apply_execution_mode(usage: &mut AnthropicUsage, mode: ExecutionMode) {
+    usage.service_tier = Some(mode.service_tier);
+    usage.speed = Some(mode.speed);
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AnthropicUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_creation_input_tokens: u64,
     pub cache_read_input_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<AnthropicServiceTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<AnthropicSpeed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_tool_use: Option<WebSearchUsage>,
 }

@@ -37,7 +37,7 @@ curl http://127.0.0.1:18765/v1/models
 
 ## Codex fast mode
 
-Every registered Codex model also has a local `-fast` form. The proxy removes `-fast` from the upstream model and requests the priority service tier. A configured `codex.serviceTier` or `CCP_CODEX_SERVICE_TIER` override wins.
+Every registered Codex model also has a local `-fast` form. The proxy removes `-fast` from the upstream model and requests the priority service tier. Claude Code's `/fast` toggle provides the same selection per request through Anthropic `speed: "fast"`; custom-gateway launches must set `CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1` to make the toggle available. Turning it off restores standard processing without changing models or restarting the proxy. A configured `codex.serviceTier` or `CCP_CODEX_SERVICE_TIER` override wins over both mechanisms.
 
 ## The `[1m]` hint
 

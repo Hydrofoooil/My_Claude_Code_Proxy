@@ -3,8 +3,8 @@ use serde_json::Value;
 use crate::traffic::TrafficCapture;
 
 use super::reducer::{
-    AnthropicUsage, ReducerEvent, UpstreamStreamError, map_codex_usage_to_anthropic,
-    reduce_upstream_bytes,
+    AnthropicUsage, ExecutionMode, ReducerEvent, UpstreamStreamError, apply_execution_mode,
+    map_codex_usage_to_anthropic, reduce_upstream_bytes,
 };
 use super::web_search_compat::{WebSearchCompatContent, build_web_search_compat_blocks};
 
@@ -13,13 +13,35 @@ pub fn accumulate_response(
     message_id: &str,
     model: &str,
 ) -> Result<Value, anyhow::Error> {
-    accumulate_response_with_traffic(upstream, message_id, model, None)
+    accumulate_response_with_traffic_and_mode(
+        upstream,
+        message_id,
+        model,
+        ExecutionMode::standard(),
+        None,
+    )
 }
 
 pub fn accumulate_response_with_traffic(
     upstream: &[u8],
     message_id: &str,
     model: &str,
+    traffic: Option<&TrafficCapture>,
+) -> Result<Value, anyhow::Error> {
+    accumulate_response_with_traffic_and_mode(
+        upstream,
+        message_id,
+        model,
+        ExecutionMode::standard(),
+        traffic,
+    )
+}
+
+pub fn accumulate_response_with_traffic_and_mode(
+    upstream: &[u8],
+    message_id: &str,
+    model: &str,
+    request_mode: ExecutionMode,
     traffic: Option<&TrafficCapture>,
 ) -> Result<Value, anyhow::Error> {
     let events = match reduce_upstream_bytes(upstream) {
@@ -127,12 +149,15 @@ pub fn accumulate_response_with_traffic(
             ReducerEvent::Finish {
                 stop_reason: sr,
                 usage: u,
+                execution_mode,
                 web_search_requests,
                 ..
             } => {
                 stop_reason = Some(sr.to_string());
                 let ws = Some(*web_search_requests).filter(|n| *n > 0);
-                usage = Some(map_codex_usage_to_anthropic(u, ws));
+                let mut mapped = map_codex_usage_to_anthropic(u, ws);
+                apply_execution_mode(&mut mapped, execution_mode.unwrap_or(request_mode));
+                usage = Some(mapped);
             }
             _ => {}
         }
@@ -276,6 +301,53 @@ mod tests {
             "data: {}\n\n",
             serde_json::to_string(&serde_json::Value::Object(obj)).unwrap()
         )
+    }
+
+    #[test]
+    fn terminal_tier_overrides_request_mode_in_usage() {
+        let upstream = sse_event(
+            "response.completed",
+            json!({
+                "response": {
+                    "id": "resp_1",
+                    "service_tier": "default",
+                    "usage": {"input_tokens": 5, "output_tokens": 2}
+                }
+            }),
+        );
+        let response = accumulate_response_with_traffic_and_mode(
+            upstream.as_bytes(),
+            "msg_1",
+            "gpt-5.5",
+            ExecutionMode::from_request_tier(Some(&super::super::request::ServiceTier::Priority)),
+            None,
+        )
+        .unwrap();
+        assert_eq!(response["usage"]["service_tier"], "standard");
+        assert_eq!(response["usage"]["speed"], "standard");
+    }
+
+    #[test]
+    fn request_mode_fills_missing_terminal_tier() {
+        let upstream = sse_event(
+            "response.completed",
+            json!({
+                "response": {
+                    "id": "resp_1",
+                    "usage": {"input_tokens": 5, "output_tokens": 2}
+                }
+            }),
+        );
+        let response = accumulate_response_with_traffic_and_mode(
+            upstream.as_bytes(),
+            "msg_1",
+            "gpt-5.5",
+            ExecutionMode::from_request_tier(Some(&super::super::request::ServiceTier::Priority)),
+            None,
+        )
+        .unwrap();
+        assert_eq!(response["usage"]["service_tier"], "priority");
+        assert_eq!(response["usage"]["speed"], "fast");
     }
 
     #[test]
