@@ -11,10 +11,11 @@
 <!-- 最后更新: Claude 2026-08-13 15:19 -->
 
 ### 进行中的任务
-- 实现、验证和本机热部署已完成；无剩余实现任务。
+- 实现、验证、本机热部署及私有仓库发布已完成；无剩余实现任务。
+- 定制仓库发布在 `https://github.com/Hydrofoooil/My_Claude_Code_Proxy`；本地 `origin` 指向定制仓库，`upstream` 保留官方仓库。
 - 备份二进制保留在 `/mnt_scalelab/maoting/home/.local/bin/claude-code-proxy.backup-20260813-151612`，供后续手工回退。
 
-<!-- 最后更新: Claude 2026-08-13 15:19 -->
+<!-- 最后更新: Claude 2026-08-20 20:21 -->
 
 ### 关键文件索引
 - `src/providers/codex/translate/request.rs`：Anthropic 请求到 Codex Responses 请求的转换与 tier 决策。
@@ -55,3 +56,14 @@
 - streaming 实验产物 2：fast 的 `message_start` 回报 fast/priority，standard 回报 standard/standard；两者 `message_delta` 均不携带 speed/tier，且均完整到达 `message_stop`。
 - 热部署实验产物 3：旧 serve PID 587915、新 PID 2418545，部署后二进制 SHA-256 为 `c1763f0600be9b390cab4039584acf0eaa383c09f89d770588105500ef6afbbc`，`/healthz` 返回 `{"ok":true}`。
 - 原生 `/fast` 实验产物 4：独立 Claude Code v2.1.227 会话中 OFF→ON 后下一请求日志为 `serviceTier: priority`，ON→OFF 后下一请求为未设置 tier（standard）；两次均收到预期回复，无需重启 proxy。实验后已关闭临时 tmux session。
+
+### [2026-08-20 20:21][Claude] 发布私有定制仓库
+
+**做了什么**
+- 将动态 `/fast` 补丁提交为 `db5e6fc` 并发布到私有仓库 `Hydrofoooil/My_Claude_Code_Proxy` 的 `main` 分支。
+- 将定制仓库设为本地 `origin`，官方 `raine/claude-code-proxy` 保留为 `upstream`，便于后续同步官方更新后移植补丁。
+
+**关键决策与发现**
+- 发布前对全部 tracked 文件及 staged diff 进行了凭据模式扫描，未发现 token、私钥或 JWT。
+- 仓库文档已明确：其他机器通过 custom gateway 使用原生 `/fast` 时，需要设置 `CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1`。
+- GitHub 远端与本地提交 SHA 完全一致，目标仓库为 private，默认分支为 `main`。
