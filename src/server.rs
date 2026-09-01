@@ -1372,6 +1372,17 @@ fn log_native_request_completed(
     );
 }
 
+fn messages_request_too_large_response() -> Response {
+    json_error(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "request_too_large",
+        format!(
+            "Request body exceeded the {} MiB size limit",
+            MAX_OPENAI_REQUEST_BYTES / (1024 * 1024)
+        ),
+    )
+}
+
 async fn dispatch_request(
     state: Arc<AppState>,
     req: Request<Body>,
@@ -1414,12 +1425,8 @@ async fn dispatch_request(
     let now = current_millis();
     let body_bytes = match axum::body::to_bytes(req.into_body(), MAX_OPENAI_REQUEST_BYTES).await {
         Ok(bytes) => bytes,
-        Err(err) => {
-            let response = json_error(
-                StatusCode::BAD_REQUEST,
-                "invalid_request_error",
-                format!("Invalid JSON: {err}"),
-            );
+        Err(_) => {
+            let response = messages_request_too_large_response();
             log_request_completed(
                 &log,
                 RequestLogContext {
@@ -2142,6 +2149,28 @@ fn set_mode(path: &Path, mode: u32) {
 #[allow(dead_code)]
 fn _unused(session_state: Option<&SessionState>) {
     let _ = session_state;
+}
+
+#[cfg(test)]
+mod request_limit_tests {
+    use super::messages_request_too_large_response;
+    use axum::{body::to_bytes, http::StatusCode};
+    use serde_json::Value;
+
+    #[tokio::test]
+    async fn messages_request_too_large_uses_anthropic_413() {
+        let response = messages_request_too_large_response();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let error: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["error"]["type"], "request_too_large");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("64 MiB"))
+        );
+    }
 }
 
 #[cfg(test)]

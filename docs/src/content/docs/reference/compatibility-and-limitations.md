@@ -44,6 +44,7 @@ claude-code-proxy targets Claude Code's practical Anthropic API usage rather tha
 - Unknown model IDs have no implicit provider fallback.
 - Anthropic-style aliases route only to the configured Codex or Kimi alias provider.
 - `[1m]` is a Claude Code client hint and does not change upstream context.
+- Messages and enabled OpenAI-compatible JSON endpoints accept serialized request bodies up to 64 MiB; this byte limit is independent of the model's token context window, and oversized requests return HTTP 413 `request_too_large`.
 - Provider context limits can be lower than Claude Code's local threshold.
 - Switching provider or model can clear provider-specific continuation assumptions while Claude Code retains portable history.
 
@@ -68,6 +69,9 @@ claude-code-proxy targets Claude Code's practical Anthropic API usage rather tha
 
 - Model availability varies by account and region.
 - Hosted general web search and X search are translated with citations and usage.
+- Hosted web search omits `max_uses` because the Grok CLI endpoint exposes no
+  equivalent cap. Non-null domain filters and user location are rejected because
+  dropping them would weaken the caller's requested search scope.
 - The implemented multimodal path does not claim general image or video compatibility.
 
 ## Cursor Agent

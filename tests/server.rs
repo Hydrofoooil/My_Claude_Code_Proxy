@@ -1299,6 +1299,37 @@ async fn monitor_records_invalid_json_failure() {
 }
 
 #[tokio::test]
+async fn messages_accept_body_larger_than_legacy_16_mib_limit() {
+    const LEGACY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
+    let monitor = MonitorHandle::new(10);
+    let app = app_with_monitor(
+        Arc::new(Registry::with_default_alias()),
+        Some(monitor.clone()),
+    );
+    let request_body = format!(
+        r#"{{"messages":[{{"role":"user","content":"{}"}}],"model":"not-a-model"}}"#,
+        "x".repeat(LEGACY_LIMIT_BYTES)
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/messages")
+                .header("content-type", "application/json")
+                .body(Body::from(request_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let state = monitor.snapshot();
+    let error = state.recent[0].error.as_deref().unwrap_or("");
+    assert!(error.starts_with("Unknown model \"not-a-model\""));
+}
+
+#[tokio::test]
 async fn monitor_records_unknown_model_failure() {
     let monitor = MonitorHandle::new(10);
     let app = app_with_monitor(
@@ -1358,6 +1389,7 @@ async fn models_endpoint_lists_supported_models() {
     assert!(!data.is_empty());
     let ids: Vec<&str> = data.iter().map(|m| m["id"].as_str().unwrap()).collect();
     assert!(ids.contains(&"gpt-5.6-sol"));
+    assert!(ids.contains(&"grok-4.6"));
     for entry in data {
         assert_eq!(entry["type"], "model");
         assert!(entry["display_name"].as_str().is_some());

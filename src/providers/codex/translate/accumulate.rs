@@ -2,9 +2,10 @@ use serde_json::Value;
 
 use crate::traffic::TrafficCapture;
 
+use super::IncompleteResponsePolicy;
 use super::reducer::{
     AnthropicUsage, ExecutionMode, ReducerEvent, UpstreamStreamError, apply_execution_mode,
-    map_codex_usage_to_anthropic, reduce_upstream_bytes,
+    map_codex_usage_to_anthropic, reduce_upstream_bytes_with_policy,
 };
 use super::web_search_compat::{WebSearchCompatContent, build_web_search_compat_blocks};
 
@@ -13,10 +14,11 @@ pub fn accumulate_response(
     message_id: &str,
     model: &str,
 ) -> Result<Value, anyhow::Error> {
-    accumulate_response_with_traffic_and_mode(
+    accumulate_response_with_policy_traffic_and_mode(
         upstream,
         message_id,
         model,
+        IncompleteResponsePolicy::Error,
         ExecutionMode::standard(),
         None,
     )
@@ -28,10 +30,11 @@ pub fn accumulate_response_with_traffic(
     model: &str,
     traffic: Option<&TrafficCapture>,
 ) -> Result<Value, anyhow::Error> {
-    accumulate_response_with_traffic_and_mode(
+    accumulate_response_with_policy_traffic_and_mode(
         upstream,
         message_id,
         model,
+        IncompleteResponsePolicy::Error,
         ExecutionMode::standard(),
         traffic,
     )
@@ -44,7 +47,41 @@ pub fn accumulate_response_with_traffic_and_mode(
     request_mode: ExecutionMode,
     traffic: Option<&TrafficCapture>,
 ) -> Result<Value, anyhow::Error> {
-    let events = match reduce_upstream_bytes(upstream) {
+    accumulate_response_with_policy_traffic_and_mode(
+        upstream,
+        message_id,
+        model,
+        IncompleteResponsePolicy::Error,
+        request_mode,
+        traffic,
+    )
+}
+
+pub(crate) fn accumulate_response_with_policy(
+    upstream: &[u8],
+    message_id: &str,
+    model: &str,
+    incomplete_response_policy: IncompleteResponsePolicy,
+) -> Result<Value, anyhow::Error> {
+    accumulate_response_with_policy_traffic_and_mode(
+        upstream,
+        message_id,
+        model,
+        incomplete_response_policy,
+        ExecutionMode::standard(),
+        None,
+    )
+}
+
+fn accumulate_response_with_policy_traffic_and_mode(
+    upstream: &[u8],
+    message_id: &str,
+    model: &str,
+    incomplete_response_policy: IncompleteResponsePolicy,
+    request_mode: ExecutionMode,
+    traffic: Option<&TrafficCapture>,
+) -> Result<Value, anyhow::Error> {
+    let events = match reduce_upstream_bytes_with_policy(upstream, incomplete_response_policy) {
         Ok(events) => events,
         Err(err) => {
             write_reducer_error_capture(traffic, &err);

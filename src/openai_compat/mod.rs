@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::provider::{ProviderError, ProviderErrorKind};
 
-pub const MAX_OPENAI_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_OPENAI_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PROVIDER_STREAM_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_SSE_EVENT_BYTES: usize = 2 * 1024 * 1024;
 

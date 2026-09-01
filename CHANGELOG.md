@@ -8,6 +8,34 @@ description: Release notes for claude-code-proxy.
 - Claude Code's native `/fast` toggle now selects Codex fast service per request,
   returns the observed speed and service tier in Anthropic usage, and switches
   back to standard service without changing models or restarting the proxy.
+- Messages and enabled OpenAI-compatible JSON routes accept request bodies up to
+  64 MiB, allowing long 1M-context sessions to compact before the local proxy
+  rejects their serialized history; oversized Messages requests now return an
+  accurate HTTP 413 error instead of `Invalid JSON`.
+
+## v0.1.35 (2026-08-19)
+
+- Grok web search works reliably with Claude Code, preserves other tools, and
+  renders results across clients.
+  ([#112](https://github.com/raine/claude-code-proxy/pull/112))
+- Grok honors the requested reasoning effort on OpenAI-compatible routes.
+- Codex and OpenCode Go streams handle connection failures, rate-limit updates,
+  and output limits more reliably.
+  ([#103](https://github.com/raine/claude-code-proxy/pull/103))
+
+## v0.1.34 (2026-08-12)
+
+- Grok users can select Grok 4.6 with the `grok-4.6` model name.
+
+## v0.1.33 (2026-08-11)
+
+- OpenCode Go users can select GLM 5, Kimi K2.5, Qwen 3.8 Max, and Qwen 3.5
+  Plus. ([#102](https://github.com/raine/claude-code-proxy/pull/102))
+- Codex WebSocket streams stay connected during long quiet responses and retry
+  automatically when keepalive traffic fails.
+- Codex connection failures preserve their specific error messages, making
+  transport problems easier to diagnose.
+  ([#100](https://github.com/raine/claude-code-proxy/pull/100))
 
 ## v0.1.32 (2026-08-03)
 
