@@ -13,11 +13,11 @@
 <!-- 最后更新: Claude 2026-09-01 10:19 -->
 
 ### 进行中的任务
-- 官方 v0.1.35 已完成语义合并，动态 `/fast` 与 64 MiB 请求上限验证通过。
-- 全套 1024 项测试、Clippy `-D warnings`、format、`git diff --check` 和 release build 已通过；待提交 merge、热部署并发布到私有 GitHub 仓库。
-- 回滚分支为 `backup/pre-v0.1.35-upgrade-20260901`；旧部署二进制备份仍保留在 `/mnt_scalelab/maoting/home/.local/bin/claude-code-proxy.backup-20260813-151612`。
+- 官方 v0.1.35、动态 `/fast`、64 MiB 请求上限、本机热部署及 GitHub 发布均已完成；无剩余实现任务。
+- 当前 serve 子进程 PID 2284426，`/healthz` 正常；部署前 v0.1.32 二进制备份为 `/mnt_scalelab/maoting/home/.local/bin/claude-code-proxy.backup-20260901-103355`。
+- 回滚源码分支为 `backup/pre-v0.1.35-upgrade-20260901`；定制仓库历史中的升级 merge commit 为 `997ba8b`。
 
-<!-- 最后更新: Claude 2026-09-01 10:31 -->
+<!-- 最后更新: Claude 2026-09-01 10:36 -->
 
 ### 关键文件索引
 - `src/providers/codex/translate/request.rs`：Anthropic 请求到 Codex Responses 请求的转换与 tier 决策。
@@ -93,3 +93,15 @@
 - 原版 v0.1.35 的该 cancellation 测试在干净源码上也稳定失败，原因是测试事件与 v0.1.35 新的 rate-limit telemetry 语义冲突；生产语义无需回退。
 - 最终验证：127 项 Codex translation tests、64 MiB focused tests、全套 1024 项测试、Clippy `-D warnings`、format、diff check 和 release build 全部通过。
 - release artifact 为 v0.1.35，SHA-256 `4e9067382ebf5981df9b7922c204aa2f61f9e69f2caac969a75f44bf94ac4d01`。
+
+### [2026-09-01 10:36][Claude] 热部署并发布升级版本
+
+**做了什么**
+- 原子部署 v0.1.35 release binary，仅 TERM 旧 serve PID 2418545，由 tmux 保活循环拉起新 PID 2284426；health check 通过。
+- 将 merge commit `997ba8b` 发布到 `Hydrofoooil/My_Claude_Code_Proxy` 的 `main`；发布时仓库 visibility 为 public。
+
+**关键决策与发现**
+- 实验产物 5：non-streaming standard→fast→standard 均 HTTP 200；fast 请求日志确认为 priority，terminal 实际 tier 仍如实回报 standard。
+- 实验产物 6：streaming fast 回报 fast/priority，standard 回报 standard/standard，terminal `message_delta` 均未携带非官方 speed/tier 字段。
+- 实验产物 7：17,825,887-byte 请求越过旧 16 MiB 门槛并到达模型校验；68,157,507-byte 请求超过 64 MiB 后返回 HTTP 413 `request_too_large`，且错误明确报告 64 MiB。
+- 远端与本地 merge commit SHA 一致；最终 WORKLOG 状态将在后续文档提交中同步。
