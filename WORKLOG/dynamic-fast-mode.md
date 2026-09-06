@@ -9,15 +9,17 @@
 - Codex WebSocket 实测会接受 priority 请求，但 non-streaming terminal response 可回报 standard；代理按实际结果回报，不虚报 fast。
 - v0.1.35 引入新的 incomplete-response policy 与统一 terminal semantics；动态 fast 的 execution-mode 元数据必须与该 policy 同时保留。
 - Anthropic Messages 与启用的 OpenAI-compatible JSON 路由共用请求体上限；定制版默认已从 16 MiB 提升为 64 MiB。
+- Codex 凭据由同机 proxy 共享，真正的后端掉认证不会只影响一个 Claude Code 会话；单会话 `Not logged in` 首先检查该进程继承的 Claude OAuth/API/cloud-provider 环境。
+- 当前 4090 两机仍运行 glibc 2.35 构建的 v0.1.32，A800-1 运行 v0.1.35；该版本差异未发现后端 401 证据，但会造成跨集群功能不一致。
 
-<!-- 最后更新: Claude 2026-09-01 10:19 -->
+<!-- 最后更新: Claude 2026-09-01 11:17 -->
 
 ### 进行中的任务
-- 官方 v0.1.35、动态 `/fast`、64 MiB 请求上限、本机热部署及 GitHub 发布均已完成；无剩余实现任务。
-- 当前 serve 子进程 PID 2284426，`/healthz` 正常；部署前 v0.1.32 二进制备份为 `/mnt_scalelab/maoting/home/.local/bin/claude-code-proxy.backup-20260901-103355`。
-- 回滚源码分支为 `backup/pre-v0.1.35-upgrade-20260901`；定制仓库历史中的升级 merge commit 为 `997ba8b`。
+- 已修复 `claude-proxy` 启动器认证隔离：新进程只保留 gateway 的 `ANTHROPIC_AUTH_TOKEN`，显式清除继承的 Claude OAuth、API key 与云厂商选择变量。
+- 现有两个 proxy 会话仍携带旧 OAuth 环境；环境变量无法在运行中移除，出现 `Not logged in` 的会话需要单独退出并用 `claude-proxy -c` 重启。
+- 后端 Codex auth 当前有效，全部轮转日志中未发现真实 401/Not authenticated；跨集群 proxy 版本统一仍未执行。
 
-<!-- 最后更新: Claude 2026-09-01 10:36 -->
+<!-- 最后更新: Claude 2026-09-01 11:17 -->
 
 ### 关键文件索引
 - `src/providers/codex/translate/request.rs`：Anthropic 请求到 Codex Responses 请求的转换与 tier 决策。
@@ -105,3 +107,15 @@
 - 实验产物 6：streaming fast 回报 fast/priority，standard 回报 standard/standard，terminal `message_delta` 均未携带非官方 speed/tier 字段。
 - 实验产物 7：17,825,887-byte 请求越过旧 16 MiB 门槛并到达模型校验；68,157,507-byte 请求超过 64 MiB 后返回 HTTP 413 `request_too_large`，且错误明确报告 64 MiB。
 - 远端与本地 merge commit SHA 一致；最终 WORKLOG 状态将在后续文档提交中同步。
+
+### [2026-09-01 11:17][Claude] 隔离单会话客户端认证状态
+
+**做了什么**
+- 修改 `/mnt_scalelab/maoting/home/.local/bin/claude-proxy`，在 exec Claude Code 前清除 `CLAUDE_CODE_OAUTH_TOKEN`、`ANTHROPIC_API_KEY` 及 Bedrock/Vertex/Foundry 选择变量。
+- 更新 `docs/src/content/docs/providers/codex.md`，记录 custom gateway 应只保留 bearer gateway 认证路径。
+
+**关键决策与发现**
+- 三份共享 proxy 轮转日志未出现真实 Codex 401、Not authenticated 或 refresh failure；共享 auth 有效至 2026-09-10。
+- 20 个正在连接本地 proxy 的 Claude Code 进程中，有 2 个额外继承了 Claude OAuth token，构成已观察到的唯一逐进程认证差异。
+- 实验产物 8：用伪 OAuth 和云厂商变量启动隔离会话后，新 wrapper 保留本地 base URL 与 gateway token，同时成功清除 OAuth、API key 和云厂商变量；临时 tmux 已关闭。
+- 跨集群检查发现 4090-1/2 运行 v0.1.32，A800-1 运行 v0.1.35，三者共享同一 auth 文件；未将版本差异擅自归因为本次 UI 现象。

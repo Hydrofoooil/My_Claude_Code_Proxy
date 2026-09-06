@@ -24,6 +24,8 @@ claude-code-proxy codex auth status
 
 The proxy owns its tokens and does not read native Codex CLI credentials. It refreshes expiring access tokens with a single-flight guard. See [Files and storage](/reference/files-and-storage/) for credential locations.
 
+A Claude Code launcher for this custom gateway should set `ANTHROPIC_AUTH_TOKEN` and explicitly unset `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, and the Bedrock, Vertex, and Foundry provider-selection variables. This keeps every terminal process on the gateway authentication path instead of inheriting session-specific credentials from an older shell or tmux environment.
+
 ## Models and fast mode
 
 Use `claude-code-proxy models` as the current catalog. Model access depends on your ChatGPT account. A model rejected by the subscription produces the upstream error verbatim.
