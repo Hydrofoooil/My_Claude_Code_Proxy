@@ -14,14 +14,16 @@
 - `gpt-6-astra` 走 Responses Lite 通道；它的 `-fast` 别名与逐请求动态 fast 都是从 `ALLOWED_MODELS` 派生的通用机制，无需为新模型单独适配。
 - 官方新增 `request-id` 响应头（Claude Code 用它填 transcript 的 `requestId`），错误响应与流式响应都会带上。
 - gpt-6-astra 的联网搜索已实测可用：带 `web_search_20250305` 工具的请求会被强制切到完整 Responses 通道且模型名不改写，上游接受 `gpt-6-astra`，不像 luna 那样需要 `full_lane_web_search_model` 回退。
-- 当前 A800-1 运行合入 astra 的构建（glibc 2.39）；4090 两机仍是 `~/.local/lib/claude-code-proxy/v0.1.32-glibc235/` 里的 v0.1.32，`ccp` 脚本的 BIN 也仍指向那份，跨集群版本不一致未解决。
+- 四台已统一到同一个二进制产物：在 4090（glibc 2.35）上构建的 `~/.local/lib/claude-code-proxy/v0.1.35-astra-glibc235/claude-code-proxy`（sha256 `fc58d3d1eaebe2353a71b2c61fd6d5a6fc5640ca9fcaa7612449e9d135ab1991`）。`ccp` 的 BIN 与 A800-1 常驻循环用的 `~/.local/bin/claude-code-proxy` 都指向这一份。
+- 部署产物必须在 4090 组构建：该产物最高只需 `GLIBC_2.34`，四台通用；而在 A800 组构建的产物需要 `GLIBC_2.39`，放进共享盘的公共路径会让 4090 无法执行（这正是此前版本分裂的成因）。
+- 4090-1/4090-2/A800-2 平时并不常驻 proxy（无 tmux session、端口无监听），由 `claude-proxy` wrapper 在发现不健康时调 `ccp start` 按需拉起；只有 A800-1 有长期常驻的保活循环。
 
 <!-- 最后更新: Claude 2026-09-06 13:39 -->
 
 ### 进行中的任务
-- gpt-6-astra 升级已完成并热部署到 A800-1（serve PID 2273461），定制 main 已推到 `Hydrofoooil/My_Claude_Code_Proxy`；无剩余实现任务。
-- 仍未做：4090 两机的版本统一。那两台是 glibc 2.35，A800 上编出的二进制不能用，需要在 4090 上单独构建一份并更新 `ccp` 的 BIN 路径。
+- gpt-6-astra 升级与四台版本统一均已完成，无进行中的任务。A800-1 常驻 serve 为 PID 2312930，运行统一产物。
 - `claude-proxy` 启动器已隔离认证环境；仍在跑的旧 proxy 会话若报 `Not logged in`，退出后用 `claude-proxy -c` 重启即可。
+- 已知的上游测试缺陷（非本仓库引入，暂未修）：部分测试通过进程级环境变量读配置，与 `config.rs` 里会改环境变量的测试并发跑时会互相踩；在高负载机器上还有一个 keepalive 计时测试会抖动。用 `--test-threads=1` 可稳定复现全绿。
 
 <!-- 最后更新: Claude 2026-09-06 13:39 -->
 
@@ -154,3 +156,16 @@
 - 结论：不会 404。`full_lane_web_search_model` 只为 luna 做名称回退，astra 原名进入完整通道即被上游接受，无需为它增加类似回退。
 - 实验产物 12：（a）非流式 hosted web search，astra 返回 HTTP 200 并真实完成搜索，日志显示上游 `model=gpt-6-astra`、`responsesLite=false`；（b）流式同一请求 HTTP 200，事件序列完整到 `message_stop`，含 2 个 `web_search_tool_result`；（c）`tool_choice` 强制搜索的 standalone search 路径（Claude Code 内置 WebSearch 工具用的那条，走独立搜索接口）astra 也返回 200，结果结构与 gpt-5.6-sol 一致。
 - 对照组：同一请求下 luna 的上游模型确实被改写为 `gpt-5.6-sol`（客户端仍回报 luna），sol 原样通过，与设计一致。
+
+### [2026-09-06 14:28][Claude] 四台统一到同一个 astra 构建
+
+**做了什么**
+- 在 4090-1（Ubuntu 22.04 / glibc 2.35）上构建当前定制 main（commit `e0bbda7`），装到 `~/.local/lib/claude-code-proxy/v0.1.35-astra-glibc235/`，并写了 BUILD_INFO。构建用 `CARGO_TARGET_DIR=/tmp/ccp-target-sm89` 放在本机盘，避免与 A800 的 target 目录互相覆盖；依赖全部命中共享 `~/.cargo` 缓存，`--offline` 即可编译。
+- 把 `~/.local/bin/ccp` 的 `BIN` 从 v0.1.32-glibc235 改到新目录（备份为 `ccp.backup-20260906`），并把 A800-1 常驻循环用的 `~/.local/bin/claude-code-proxy` 也换成同一份产物后重启 serve（PID 2273461 → 2312930）。
+- 旧的 `v0.1.32-glibc235/` 目录保留作回滚。
+
+**关键决策与发现**
+- 选择"在低 glibc 组构建、四台共用一份"而不是"每组各编一份"：共享家目录导致 `~/.local/bin/claude-code-proxy` 这类公共路径四台看到的是同一个文件，放 glibc 2.39 产物必然让 4090 无法执行。实测新产物最高只需 `GLIBC_2.34`，旧的 A800 产物需 `GLIBC_2.39`。
+- 实验产物 13：4090-1 上 release 构建通过；整套测试并行跑时有 1 项失败，但**单线程跑 lib 全套 868/868 通过**，11 个集成测试二进制共 167 项在并行下也全过。两次并行失败分别是 `keepalive_pongs_do_not_extend_response_start_timeout`（该机 load average 317，计时断言饿死）与 `translate_includes_reasoning_when_enabled`（读进程环境变量，被 config 测试并发改写）；两者单独跑均 3/3 通过。属上游测试隔离缺陷，与 glibc 和本次合并无关。
+- 实验产物 14：4090-1 与 4090-2 上 `ccp start` 均拉起新产物（进程 exe 指向 v0.1.35-astra-glibc235），`/healthz` 正常，`/v1/models` 含 2 个 astra 条目，真实请求返回 HTTP 200 且内容正确；验证后按原状停回（这三台平时不常驻 proxy）。
+- 实验产物 15：A800-1 换成统一产物后 `/healthz` 正常，astra 请求 HTTP 200；回滚备份 `~/.local/bin/claude-code-proxy.backup-20260906-142210`。
