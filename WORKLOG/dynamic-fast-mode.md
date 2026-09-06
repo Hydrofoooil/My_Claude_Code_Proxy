@@ -13,6 +13,7 @@
 - 定制 main 已越过官方 v0.1.35 tag，跟踪官方未发版的 main（合并到 `55bf0b5`）以取得 gpt-6-astra；Cargo 版本号仍是 0.1.35，官方尚未发新 release。
 - `gpt-6-astra` 走 Responses Lite 通道；它的 `-fast` 别名与逐请求动态 fast 都是从 `ALLOWED_MODELS` 派生的通用机制，无需为新模型单独适配。
 - 官方新增 `request-id` 响应头（Claude Code 用它填 transcript 的 `requestId`），错误响应与流式响应都会带上。
+- gpt-6-astra 的联网搜索已实测可用：带 `web_search_20250305` 工具的请求会被强制切到完整 Responses 通道且模型名不改写，上游接受 `gpt-6-astra`，不像 luna 那样需要 `full_lane_web_search_model` 回退。
 - 当前 A800-1 运行合入 astra 的构建（glibc 2.39）；4090 两机仍是 `~/.local/lib/claude-code-proxy/v0.1.32-glibc235/` 里的 v0.1.32，`ccp` 脚本的 BIN 也仍指向那份，跨集群版本不一致未解决。
 
 <!-- 最后更新: Claude 2026-09-06 13:39 -->
@@ -143,3 +144,13 @@
 - 实验产物 9：部署后 serve 从 PID 2284426 换到 2273461，`/healthz` 返回 `{"ok":true}`，二进制 SHA-256 `e9a62b56dbd474ce941286cd51fc496e5b570141e509619a61df2cba2ef58907`；回滚备份 `~/.local/bin/claude-code-proxy.backup-20260906-133618`。
 - 实验产物 10：`/v1/models` 已列出 `gpt-6-astra` 与 `gpt-6-astra-fast`；对 `gpt-6-astra` 的两次真实请求均 HTTP 200 并正常回话，`speed:"fast"` 那次按既有语义如实回报 terminal tier 为 standard。
 - 实验产物 11：官方新增的 `request-id` 响应头在实际请求中生效（如 `3f2cda06-5d8e-4e7e-8415-01b105f33929`）。
+
+### [2026-09-06 13:55][Claude] 验证 gpt-6-astra 的联网搜索路径
+
+**做了什么**
+- 针对"astra 走完整通道可能被上游拒绝"的疑虑做了实测，覆盖两条不同代码路径与流式/非流式两种形态，未改动任何代码。
+
+**关键决策与发现**
+- 结论：不会 404。`full_lane_web_search_model` 只为 luna 做名称回退，astra 原名进入完整通道即被上游接受，无需为它增加类似回退。
+- 实验产物 12：（a）非流式 hosted web search，astra 返回 HTTP 200 并真实完成搜索，日志显示上游 `model=gpt-6-astra`、`responsesLite=false`；（b）流式同一请求 HTTP 200，事件序列完整到 `message_stop`，含 2 个 `web_search_tool_result`；（c）`tool_choice` 强制搜索的 standalone search 路径（Claude Code 内置 WebSearch 工具用的那条，走独立搜索接口）astra 也返回 200，结果结构与 gpt-5.6-sol 一致。
+- 对照组：同一请求下 luna 的上游模型确实被改写为 `gpt-5.6-sol`（客户端仍回报 luna），sol 原样通过，与设计一致。
